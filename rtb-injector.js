@@ -1,17 +1,12 @@
-/* rtb-injector.js — адаптивный Yandex.RTB R-A-14383531-4
-   Вставка в тело статьи (после 6-го абзаца, если они есть; иначе ближе к концу).
-*/
+/* rtb-injector.js — Yandex RTB R-A-14383531-4 для Wix/SPA: после 6-го абзаца */
 
 (function () {
   "use strict";
 
   var BLOCK_ID = "R-A-14383531-4";
-  var DIV_ID = "yandex_rtb_" + BLOCK_ID.replace(/[^a-zA-Z0-9_]/g, "_");
-  var TARGET_PARAGRAPH_INDEX = 5;   // после 6-го абзаца
-  var MAX_ATTEMPTS = 20;           // ~10 секунд ожидания контента
-  var INTERVAL_MS = 500;
+  var TARGET_IDX = 5;                 // после 6-го абзаца (0..5)
+  var ONE_PER_CONTAINER = true;
 
-  // Возможные контейнеры статьи (для Wix/blog)
   var SELECTORS = [
     '[itemprop="articleBody"]',
     '[data-hook="post-body"]',
@@ -28,33 +23,19 @@
     'main'
   ];
 
-  var injected = false;
-
-  function log(msg) {
-    if (window.console && console.log) {
-      console.log("[rtb-injector]", msg);
-    }
-  }
-
-  // Подключаем / ждём Yandex Context
-  function ensureYandexContext(callback) {
-    if (!window.yaContextCb) {
-      window.yaContextCb = [];
-      log("yaContextCb init");
-    }
+  // --- загрузка/готовность API Яндекса ---
+  function ensureContext(cb) {
+    window.yaContextCb = window.yaContextCb || [];
 
     if (window.Ya && window.Ya.Context && window.Ya.Context.AdvManager) {
-      log("Ya.Context готов");
-      callback();
+      cb();
       return;
     }
 
     var existing = document.querySelector(
       'script[src*="yandex.ru/ads/system/context.js"]'
     );
-
     if (!existing) {
-      log("Подключаем context.js");
       var s = document.createElement("script");
       s.async = true;
       s.src = "https://yandex.ru/ads/system/context.js";
@@ -62,112 +43,82 @@
     }
 
     window.yaContextCb.push(function () {
-      log("callback из yaContextCb");
-      callback();
+      if (window.Ya && Ya.Context && Ya.Context.AdvManager) {
+        cb();
+      }
     });
   }
 
-  // Находим контейнер статьи
-  function detectContainer() {
-    for (var i = 0; i < SELECTORS.length; i++) {
-      var c = document.querySelector(SELECTORS[i]);
-      if (c) {
-        log("Контейнер: " + SELECTORS[i]);
-        return c;
-      }
-    }
-    var mainEl = document.querySelector("main");
-    if (mainEl) {
-      log("Контейнер: <main>");
-      return mainEl;
-    }
-    log("Контейнер: <body> (фолбэк)");
-    return document.body;
-  }
-
-  // Вставляем слот один раз
-  function injectOnce() {
-    if (injected) return;
-
-    var container = detectContainer();
-    if (!container) {
-      log("Контейнер не найден");
-      return;
-    }
+  // --- вставка блока в конкретный контейнер ---
+  function injectInto(container) {
+    if (!container || (ONE_PER_CONTAINER && container._rtbInjected)) return;
 
     var paragraphs = container.querySelectorAll("p");
-    var targetNode;
+    if (!paragraphs.length) return;
 
-    if (paragraphs.length > TARGET_PARAGRAPH_INDEX) {
-      targetNode = paragraphs[TARGET_PARAGRAPH_INDEX];
-      log("После параграфа #" + TARGET_PARAGRAPH_INDEX);
-    } else if (paragraphs.length > 0) {
-      targetNode = paragraphs[paragraphs.length - 1];
-      log("После последнего параграфа");
-    } else {
-      targetNode = container.lastChild || container;
-      log("В конец контейнера (нет <p>)");
-    }
+    var idx = Math.min(TARGET_IDX, paragraphs.length - 1);
+    var after = paragraphs[idx];
 
-    if (document.getElementById(DIV_ID)) {
-      log("Слот уже есть");
-      injected = true;
-      return;
-    }
+    var divId = "yandex_rtb_" + BLOCK_ID.replace(/[^a-zA-Z0-9_]/g, "_")
+               + "_" + Math.random().toString(16).slice(2);
 
     var slot = document.createElement("div");
-    slot.id = DIV_ID;
+    slot.id = divId;
     slot.style.width = "100%";
     slot.style.margin = "20px 0";
 
-    if (targetNode && targetNode.parentNode) {
-      targetNode.parentNode.insertBefore(slot, targetNode.nextSibling);
-    } else {
-      container.appendChild(slot);
-    }
-    log("Слот вставлен: #" + DIV_ID);
+    after.parentNode.insertBefore(slot, after.nextSibling);
 
-    ensureYandexContext(function () {
-      if (injected) return;
-      if (!(window.Ya && window.Ya.Context && window.Ya.Context.AdvManager)) {
-        log("Ya.Context.AdvManager недоступен");
-        return;
-      }
-
-      log("Рендер блока " + BLOCK_ID + " в " + DIV_ID);
-      try {
-        window.Ya.Context.AdvManager.render({
-          blockId: BLOCK_ID,
-          renderTo: DIV_ID
-        });
-        injected = true;
-      } catch (e) {
-        log("Ошибка render: " + (e && e.message));
-      }
+    ensureContext(function () {
+      Ya.Context.AdvManager.render({
+        blockId: BLOCK_ID,
+        renderTo: divId
+      });
     });
+
+    if (ONE_PER_CONTAINER) {
+      container._rtbInjected = true;
+    }
   }
 
-  // Делаем несколько попыток — ждём, пока Wix дорисует контент
-  function runWithRetries() {
-    var attempts = 0;
-    var timer = setInterval(function () {
-      if (injected) {
-        clearInterval(timer);
-        return;
-      }
-      injectOnce();
-      attempts++;
-      if (attempts >= MAX_ATTEMPTS) {
-        log("MAX_ATTEMPTS — остановка");
-        clearInterval(timer);
-      }
-    }, INTERVAL_MS);
+  // --- начальное сканирование ---
+  function scan() {
+    var containers = document.querySelectorAll(SELECTORS.join(","));
+    for (var i = 0; i < containers.length; i++) {
+      injectInto(containers[i]);
+    }
   }
 
-  log("init");
   if (document.readyState === "complete" || document.readyState === "interactive") {
-    runWithRetries();
+    setTimeout(scan, 0);
   } else {
-    document.addEventListener("DOMContentLoaded", runWithRetries);
+    document.addEventListener("DOMContentLoaded", scan);
   }
+
+  // --- наблюдение за изменениями DOM (важно для Wix SPA) ---
+  var observer = new MutationObserver(function (mutations) {
+    mutations.forEach(function (m) {
+      m.addedNodes && m.addedNodes.forEach(function (node) {
+        if (!(node instanceof HTMLElement)) return;
+
+        // Если сам узел — контейнер статьи
+        if (node.matches && SELECTORS.some(function (sel) { return node.matches(sel); })) {
+          injectInto(node);
+        }
+
+        // Или внутри него появились контейнеры
+        if (node.querySelectorAll) {
+          var found = node.querySelectorAll(SELECTORS.join(","));
+          for (var i = 0; i < found.length; i++) {
+            injectInto(found[i]);
+          }
+        }
+      });
+    });
+  });
+
+  observer.observe(document.documentElement, {
+    childList: true,
+    subtree: true
+  });
 })();
