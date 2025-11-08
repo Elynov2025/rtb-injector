@@ -1,15 +1,14 @@
-/* rtb-injector.js — адаптивный Yandex.RTB R-A-14383531-4 после 6-го абзаца */
+/* rtb-injector.js — адаптивный Yandex.RTB R-A-14383531-4 после 6-го абзаца (Wix/newsefir/zeronum) */
 
 (function () {
   "use strict";
 
-  // --- настройки под баннер ---
-  var BLOCK_ID = "R-A-14383531-4";        // ID твоего адаптивного блока
-  var TARGET_PARAGRAPH_INDEX = 5;         // после 6-го абзаца (индексация с 0)
-  var MAX_ATTEMPTS = 20;                  // максимум попыток найти контент
-  var INTERVAL_MS = 500;                  // интервал между попытками (мс)
+  var BLOCK_ID = "R-A-14383531-4";        // твой RTB-блок (адаптивный)
+  var TARGET_PARAGRAPH_INDEX = 5;         // после 6-го абзаца (0..5)
+  var MAX_ATTEMPTS = 20;                  // до ~10 секунд ожидания контента
+  var INTERVAL_MS = 500;
 
-  // контейнеры, где ищем текст статьи
+  // Селекторы возможных контейнеров статьи — можно дополнять под верстку
   var SELECTORS = [
     '[itemprop="articleBody"]',
     'article',
@@ -25,15 +24,17 @@
 
   var injected = false;
 
-  // --- подключаем/ждём API Яндекса ---
+  // Подключаем / ждём Яндекс.API
   function ensureYandexContext(callback) {
     window.yaContextCb = window.yaContextCb || [];
 
+    // Если уже загружен — запускаем сразу
     if (window.Ya && window.Ya.Context && window.Ya.Context.AdvManager) {
       callback();
       return;
     }
 
+    // Если скрипт ещё не подключен — подключаем
     var existing = document.querySelector(
       'script[src*="yandex.ru/ads/system/context.js"]'
     );
@@ -45,24 +46,25 @@
       document.head.appendChild(s);
     }
 
+    // Яндекс при загрузке пробежится по очереди и вызовет callback
     window.yaContextCb.push(callback);
   }
 
-  // --- ищем контейнер с достаточным числом абзацев ---
+  // Ищем контейнер статьи, где достаточно абзацев
   function findContainer() {
     for (var i = 0; i < SELECTORS.length; i++) {
-      var container = document.querySelector(SELECTORS[i]);
-      if (!container) continue;
+      var c = document.querySelector(SELECTORS[i]);
+      if (!c) continue;
 
-      var paragraphs = container.querySelectorAll("p");
+      var paragraphs = c.querySelectorAll("p");
       if (paragraphs.length > TARGET_PARAGRAPH_INDEX) {
-        return { container: container, paragraphs: paragraphs };
+        return { container: c, paragraphs: paragraphs };
       }
     }
     return null;
   }
 
-  // --- вставка блока один раз ---
+  // Вставляем блок один раз
   function injectOnce() {
     if (injected) return;
 
@@ -72,10 +74,9 @@
     var targetP = data.paragraphs[TARGET_PARAGRAPH_INDEX];
     if (!targetP) return;
 
-    // id рендера — на основе BLOCK_ID (чтобы не конфликтовать)
     var divId = "yandex_rtb_" + BLOCK_ID.replace(/[^a-zA-Z0-9_]/g, "_");
 
-    // если блок уже есть — ничего не делаем
+    // Если уже вставляли — выходим
     if (document.getElementById(divId)) {
       injected = true;
       return;
@@ -83,7 +84,7 @@
 
     var div = document.createElement("div");
     div.id = divId;
-    div.style.width = "100%";       // адаптив по ширине контейнера
+    div.style.width = "100%";      // адаптивный по ширине
     div.style.margin = "20px 0";
 
     targetP.parentNode.insertBefore(div, targetP.nextSibling);
@@ -97,14 +98,14 @@
       window.Ya.Context.AdvManager.render({
         blockId: BLOCK_ID,
         renderTo: divId
-        // размеры не задаём: в кабинете РСЯ блок настроен как адаптивный
+        // размеры не задаём: блок настроен как адаптивный в РСЯ
       });
 
       injected = true;
     });
   }
 
-  // --- несколько попыток дождаться контента Wix ---
+  // Несколько попыток дождаться, пока Wix дорисует контент
   function runWithRetries() {
     var attempts = 0;
     var timer = setInterval(function () {
