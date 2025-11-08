@@ -1,124 +1,112 @@
-/* rtb-injector.js — Yandex RTB R-A-14383531-4 для Wix/SPA: после 6-го абзаца */
-
+/* rtb-injector.js — Yandex RTB after 6th paragraph (site-wide for Wix) */
 (function () {
   "use strict";
 
-  var BLOCK_ID = "R-A-14383531-4";
-  var TARGET_IDX = 5;                 // после 6-го абзаца (0..5)
-  var ONE_PER_CONTAINER = true;
-
+  var BLOCK_ID = "R-A-14383531-4";        // ваш ID блока
+  var TARGET_IDX = 5;                      // после 6-го абзаца (индексация с 0)
+  var ONE_PER_CONTAINER = true;            // по одному блоку в контейнер
   var SELECTORS = [
     '[itemprop="articleBody"]',
-    '[data-hook="post-body"]',
-    '[data-mesh-id*="Post__content"]',
-    '[data-mesh-id*="post__content"]',
     'article',
-    '.post-content',
-    '.entry-content',
-    '.article-content',
-    '.rich-content',
-    '.blog-post-content',
-    '.cms-content',
-    'main .content',
-    'main'
+    '.post-content', '.entry-content', '.article-content',
+    '.rich-content', '.blog-post-content', '.cms-content',
+    'main .content', 'main'
   ];
 
-  // --- загрузка/готовность API Яндекса ---
-  function ensureContext(cb) {
+  /* ----- загрузка/готовность API Яндекса ----- */
+  function ensureContext(cb){
     window.yaContextCb = window.yaContextCb || [];
+    if (window.Ya && Ya.Context && Ya.Context.AdvManager) return cb();
 
-    if (window.Ya && window.Ya.Context && window.Ya.Context.AdvManager) {
-      cb();
-      return;
-    }
-
-    var existing = document.querySelector(
-      'script[src*="yandex.ru/ads/system/context.js"]'
-    );
-    if (!existing) {
-      var s = document.createElement("script");
+    // если контекст ещё не подключен — подключим
+    var s = document.querySelector('script[src*="yandex.ru/ads/system/context.js"]');
+    if (!s) {
+      s = document.createElement('script');
       s.async = true;
-      s.src = "https://yandex.ru/ads/system/context.js";
+      s.src = 'https://yandex.ru/ads/system/context.js';
+      // В Wix внешний файл допустим; если CSP блокирует домен, см. инструкцию ниже
       document.head.appendChild(s);
     }
 
-    window.yaContextCb.push(function () {
+    // ждём готовность API
+    var tries = 0, t = setInterval(function(){
       if (window.Ya && Ya.Context && Ya.Context.AdvManager) {
-        cb();
+        clearInterval(t); cb();
+      } else if (++tries > 120) { // ~14 сек
+        clearInterval(t);
+        console.warn('[RTB] Ya API not ready (CSP/AdBlock?)');
+      }
+    }, 120);
+  }
+
+  /* ----- поиск контейнеров статьи ----- */
+  function getArticleContainers(root){
+    var list = [];
+    SELECTORS.forEach(function(sel){
+      root.querySelectorAll(sel).forEach(function(el){
+        var s = (el.id + ' ' + el.className).toLowerCase();
+        if (/header|footer|aside|nav|menu|share|social|related|comments?|promo|banner/.test(s)) return;
+        if (el.querySelector('p')) list.push(el);
+      });
+    });
+    return Array.from(new Set(list));
+  }
+
+  /* ----- вставка блока в конкретный контейнер ----- */
+  function injectInto(container){
+    if (ONE_PER_CONTAINER && container.hasAttribute('data-rtb-injected')) return false;
+
+    var ps = Array.from(container.querySelectorAll('p'))
+      .filter(function(p){ return (p.textContent||'').trim().length>0 && p.offsetParent!==null; });
+
+    if (!ps.length) return false;
+
+    var idx = Math.min(TARGET_IDX, ps.length - 1);
+    var anchor = ps[idx];
+
+    // нейтральный id, чтобы не ловить простые правила AdBlock/CSS
+    var renderId = ('ad_'+Date.now()+Math.random()).replace(/\W/g,'');
+    var host = document.createElement('div');
+    host.setAttribute('data-ad-host','true');
+    host.style.margin = '24px 0';
+    host.innerHTML = '<div id="'+renderId+'"></div>';
+    anchor.insertAdjacentElement('afterend', host);
+    container.setAttribute('data-rtb-injected','true');
+
+    ensureContext(function(){
+      try {
+        window.yaContextCb.push(function(){
+          if (window.Ya && Ya.Context && Ya.Context.AdvManager) {
+            Ya.Context.AdvManager.render({
+              blockId: BLOCK_ID,
+              renderTo: renderId
+            });
+          }
+        });
+      } catch(e) {
+        console.warn('[RTB] render error:', e);
       }
     });
+
+    return true;
   }
 
-  // --- вставка блока в конкретный контейнер ---
-  function injectInto(container) {
-    if (!container || (ONE_PER_CONTAINER && container._rtbInjected)) return;
+  function run(root){ getArticleContainers(root||document).forEach(injectInto); }
 
-    var paragraphs = container.querySelectorAll("p");
-    if (!paragraphs.length) return;
+  // первичный запуск
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function(){ run(document); });
+  } else { run(document); }
 
-    var idx = Math.min(TARGET_IDX, paragraphs.length - 1);
-    var after = paragraphs[idx];
-
-    var divId = "yandex_rtb_" + BLOCK_ID.replace(/[^a-zA-Z0-9_]/g, "_")
-               + "_" + Math.random().toString(16).slice(2);
-
-    var slot = document.createElement("div");
-    slot.id = divId;
-    slot.style.width = "100%";
-    slot.style.margin = "20px 0";
-
-    after.parentNode.insertBefore(slot, after.nextSibling);
-
-    ensureContext(function () {
-      Ya.Context.AdvManager.render({
-        blockId: BLOCK_ID,
-        renderTo: divId
+  // следим за динамически подгружаемым контентом (SPA/«показать ещё»)
+  if ('MutationObserver' in window) {
+    var mo = new MutationObserver(function(muts){
+      muts.forEach(function(m){
+        m.addedNodes && m.addedNodes.forEach(function(node){
+          if (node.nodeType === 1) run(node);
+        });
       });
     });
-
-    if (ONE_PER_CONTAINER) {
-      container._rtbInjected = true;
-    }
+    mo.observe(document.documentElement, {childList:true, subtree:true});
   }
-
-  // --- начальное сканирование ---
-  function scan() {
-    var containers = document.querySelectorAll(SELECTORS.join(","));
-    for (var i = 0; i < containers.length; i++) {
-      injectInto(containers[i]);
-    }
-  }
-
-  if (document.readyState === "complete" || document.readyState === "interactive") {
-    setTimeout(scan, 0);
-  } else {
-    document.addEventListener("DOMContentLoaded", scan);
-  }
-
-  // --- наблюдение за изменениями DOM (важно для Wix SPA) ---
-  var observer = new MutationObserver(function (mutations) {
-    mutations.forEach(function (m) {
-      m.addedNodes && m.addedNodes.forEach(function (node) {
-        if (!(node instanceof HTMLElement)) return;
-
-        // Если сам узел — контейнер статьи
-        if (node.matches && SELECTORS.some(function (sel) { return node.matches(sel); })) {
-          injectInto(node);
-        }
-
-        // Или внутри него появились контейнеры
-        if (node.querySelectorAll) {
-          var found = node.querySelectorAll(SELECTORS.join(","));
-          for (var i = 0; i < found.length; i++) {
-            injectInto(found[i]);
-          }
-        }
-      });
-    });
-  });
-
-  observer.observe(document.documentElement, {
-    childList: true,
-    subtree: true
-  });
 })();
