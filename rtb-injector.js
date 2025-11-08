@@ -1,16 +1,17 @@
 /* rtb-injector.js — адаптивный Yandex.RTB R-A-14383531-4
-   Вставка в тело статьи (после 6-го абзаца, если они есть; иначе ближе к концу текста)
+   Вставка в тело статьи (после 6-го абзаца, если они есть; иначе ближе к концу).
 */
 
 (function () {
   "use strict";
 
   var BLOCK_ID = "R-A-14383531-4";
-  var TARGET_PARAGRAPH_INDEX = 5;   // после 6-го абзаца, если есть
-  var MAX_ATTEMPTS = 20;           // до ~10 секунд
+  var DIV_ID = "yandex_rtb_" + BLOCK_ID.replace(/[^a-zA-Z0-9_]/g, "_");
+  var TARGET_PARAGRAPH_INDEX = 5;   // после 6-го абзаца
+  var MAX_ATTEMPTS = 20;           // ~10 секунд ожидания контента
   var INTERVAL_MS = 500;
 
-  // Возможные контейнеры статьи (Wix / блог / кастом)
+  // Возможные контейнеры статьи (для Wix/blog)
   var SELECTORS = [
     '[itemprop="articleBody"]',
     '[data-hook="post-body"]',
@@ -29,13 +30,21 @@
 
   var injected = false;
 
+  function log(msg) {
+    if (window.console && console.log) {
+      console.log("[rtb-injector]", msg);
+    }
+  }
+
   // Подключаем / ждём Yandex Context
   function ensureYandexContext(callback) {
     if (!window.yaContextCb) {
       window.yaContextCb = [];
+      log("yaContextCb init");
     }
 
     if (window.Ya && window.Ya.Context && window.Ya.Context.AdvManager) {
+      log("Ya.Context готов");
       callback();
       return;
     }
@@ -45,57 +54,69 @@
     );
 
     if (!existing) {
+      log("Подключаем context.js");
       var s = document.createElement("script");
       s.async = true;
       s.src = "https://yandex.ru/ads/system/context.js";
       document.head.appendChild(s);
     }
 
-    window.yaContextCb.push(callback);
+    window.yaContextCb.push(function () {
+      log("callback из yaContextCb");
+      callback();
+    });
   }
 
   // Находим контейнер статьи
   function detectContainer() {
     for (var i = 0; i < SELECTORS.length; i++) {
       var c = document.querySelector(SELECTORS[i]);
-      if (c) return c;
+      if (c) {
+        log("Контейнер: " + SELECTORS[i]);
+        return c;
+      }
     }
-    // фолбэк: main или body
     var mainEl = document.querySelector("main");
-    return mainEl || document.body;
+    if (mainEl) {
+      log("Контейнер: <main>");
+      return mainEl;
+    }
+    log("Контейнер: <body> (фолбэк)");
+    return document.body;
   }
 
-  // Вставляем блок один раз
+  // Вставляем слот один раз
   function injectOnce() {
     if (injected) return;
 
     var container = detectContainer();
-    if (!container) return;
+    if (!container) {
+      log("Контейнер не найден");
+      return;
+    }
 
-    // Ищем параграфы только внутри контейнера
     var paragraphs = container.querySelectorAll("p");
     var targetNode;
 
     if (paragraphs.length > TARGET_PARAGRAPH_INDEX) {
-      // нормальный случай — после 6-го абзаца
       targetNode = paragraphs[TARGET_PARAGRAPH_INDEX];
+      log("После параграфа #" + TARGET_PARAGRAPH_INDEX);
     } else if (paragraphs.length > 0) {
-      // если абзацев мало — после последнего
       targetNode = paragraphs[paragraphs.length - 1];
+      log("После последнего параграфа");
     } else {
-      // если вообще нет <p>, ставим ближе к концу контейнера
       targetNode = container.lastChild || container;
+      log("В конец контейнера (нет <p>)");
     }
 
-    var divId = "yandex_rtb_" + BLOCK_ID.replace(/[^a-zA-Z0-9_]/g, "_");
-
-    if (document.getElementById(divId)) {
+    if (document.getElementById(DIV_ID)) {
+      log("Слот уже есть");
       injected = true;
       return;
     }
 
     var slot = document.createElement("div");
-    slot.id = divId;
+    slot.id = DIV_ID;
     slot.style.width = "100%";
     slot.style.margin = "20px 0";
 
@@ -104,24 +125,29 @@
     } else {
       container.appendChild(slot);
     }
+    log("Слот вставлен: #" + DIV_ID);
 
     ensureYandexContext(function () {
       if (injected) return;
       if (!(window.Ya && window.Ya.Context && window.Ya.Context.AdvManager)) {
+        log("Ya.Context.AdvManager недоступен");
         return;
       }
 
-      window.Ya.Context.AdvManager.render({
-        blockId: BLOCK_ID,
-        renderTo: divId
-        // блок адаптивный — размеры задаются в кабинете
-      });
-
-      injected = true;
+      log("Рендер блока " + BLOCK_ID + " в " + DIV_ID);
+      try {
+        window.Ya.Context.AdvManager.render({
+          blockId: BLOCK_ID,
+          renderTo: DIV_ID
+        });
+        injected = true;
+      } catch (e) {
+        log("Ошибка render: " + (e && e.message));
+      }
     });
   }
 
-  // Многократные попытки, чтобы дождаться Wix-контента
+  // Делаем несколько попыток — ждём, пока Wix дорисует контент
   function runWithRetries() {
     var attempts = 0;
     var timer = setInterval(function () {
@@ -132,11 +158,13 @@
       injectOnce();
       attempts++;
       if (attempts >= MAX_ATTEMPTS) {
+        log("MAX_ATTEMPTS — остановка");
         clearInterval(timer);
       }
     }, INTERVAL_MS);
   }
 
+  log("init");
   if (document.readyState === "complete" || document.readyState === "interactive") {
     runWithRetries();
   } else {
